@@ -1,30 +1,33 @@
-# VPS Remaining Value (VPS 剩余价值计算器)
+# VPS Remaining Value（纯 GitHub Pages 版）
 
-一个用于计算 各类订阅服务剩余价值的 Web 工具，支持动态汇率转换并可生成 SVG 分享图
+用于计算 VPS 与各类订阅服务剩余价值的浏览器工具，支持汇率转换、分享链接以及 SVG 预览和下载。
 
-![main](./resource/3.png)
+在线使用：<https://ghunlil.github.io/vps-remaining-value/>
 
-## SVG 预览
+![主界面](./resource/3.png)
 
-| ![main](./resource/1.svg) | ![main](./resource/2.svg) |
-|-----------------------|-----------------------|
+## 特点
+
+- 纯 HTML、CSS 和 JavaScript，无服务器、数据库或 API Key
+- SVG 完全在浏览器中生成，数据不会提交到服务端
+- 分享参数压缩到 `?v=...` 链接，可直接在 GitHub Pages 打开
+- GitHub Actions 每 6 小时获取一次汇率并重新部署
+- 汇率服务不可用时自动使用仓库内置备用数据
 
 ## 本地运行
 
 ```bash
-npm install
-npm run start
+python3 -m http.server 45867 --directory public
 ```
 
-服务默认运行在 http://localhost:45867
+然后打开 <http://localhost:45867>。
 
-## Docker 部署
+## 部署
 
-```bash
-docker build -t vps-remaining-value:latest .
-docker run -d -p 45867:45867 -e SECRET_KEY="YourCustomSecretKeyHere" -e V6_API_KEY="YourExchangeRateV6KeyHere" --restart always --name vps-remaining-value vps-remaining-value:latest
-```
+`.github/workflows/pages.yml` 会在 `master` 分支更新时自动发布 `public/`
+目录，也会定时刷新汇率。仓库的 Pages 来源应设置为 **GitHub Actions**。
 
-```bash
-docker run -d -p 45867:45867 -e SECRET_KEY="YourCustomSecretKeyHere" -e V6_API_KEY="YourExchangeRateV6KeyHere" --restart always --name vps-remaining-value ghcr.io/youngyannick/vps-remaining-value:latest
-```
+## 项目来源
+
+本仓库基于 [YoungYannick/vps-remaining-value](https://github.com/YoungYannick/vps-remaining-value)
+改造为纯 GitHub Pages 版本，并保留原项目署名。

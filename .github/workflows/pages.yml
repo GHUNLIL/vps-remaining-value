@@ -1,0 +1,74 @@
+name: Deploy GitHub Pages
+
+on:
+  push:
+    branches:
+      - master
+  schedule:
+    - cron: "17 */6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Refresh exchange rates
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          refresh_rates() {
+            local url="$1"
+            local source="$2"
+            local response_file
+            response_file="$(mktemp)"
+
+            if curl --fail --silent --show-error --location --max-time 20 \
+              "$url" --output "$response_file" \
+              && jq -e '.rates and (.rates.USD == 1)' "$response_file" >/dev/null; then
+              jq --arg source "$source" \
+                '{source: $source, updatedAt: (now | todateiso8601), rates: .rates}' \
+                "$response_file" > public/rates.json
+              rm -f "$response_file"
+              return 0
+            fi
+
+            rm -f "$response_file"
+            return 1
+          }
+
+          refresh_rates \
+            "https://api.exchangerate.fun/latest?base=USD" \
+            "ExchangeRate.fun" \
+            || refresh_rates \
+              "https://api.exchangerate-api.com/v4/latest/USD" \
+              "ExchangeRate-API V4" \
+            || echo "Using the bundled fallback exchange rates."
+
+      - name: Configure Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload site
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: public
+
+      - name: Deploy
+        id: deployment
+        uses: actions/deploy-pages@v4
