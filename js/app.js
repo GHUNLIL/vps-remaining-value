@@ -14,6 +14,9 @@ const rateDisplay = document.getElementById('rate-display');
 let exchangeRates = {};
 let currentRate = 1.0000;
 let lastTxField = 'ta';
+let currentSvg = '';
+let previewObjectUrl = '';
+let logoDataUri = '';
 
 function syncTransactionFields() {
     const rv = calculateRV();
@@ -42,14 +45,19 @@ function syncTransactionFields() {
 }
 async function fetchRates() {
     try {
-        const res = await fetch('/api/rates');
+        const ratesUrl = new URL('./rates.json', window.location.href);
+        ratesUrl.searchParams.set('_', Date.now().toString());
+        const res = await fetch(ratesUrl, { cache: 'no-store' });
         if (!res.ok) throw new Error('API Error');
         const data = await res.json();
         exchangeRates = data.rates;
-        document.getElementById('rate-source').innerText = `数据来源: ${data.source}`;
+        const updatedAt = data.updatedAt
+            ? ` · ${new Date(data.updatedAt).toLocaleString('zh-CN')}`
+            : '';
+        document.getElementById('rate-source').innerText = `数据来源: ${data.source}${updatedAt}`;
         updateRateField();
     } catch (e) {
-        document.getElementById('rate-source').innerText = '数据来源: 获取失败';
+        document.getElementById('rate-source').innerText = '数据来源: 获取失败，请稍后重试';
     }
 }
 function updateRateField() {
@@ -146,6 +154,67 @@ function generateBase64Url(paramsObj) {
     }
     return btoa(binaryStr).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
 }
+const daysToDate = (days) => new Date(days * 86400000).toISOString().split('T')[0];
+function decodeBase64Params(base64UrlStr) {
+    if (!base64UrlStr) return {};
+    let b64 = base64UrlStr.replace(/-/g, '+').replace(/_/g, '/');
+    while (b64.length % 4) b64 += '=';
+    try {
+        const binaryStr = atob(b64);
+        const buffer = new ArrayBuffer(binaryStr.length);
+        const bytes = new Uint8Array(buffer);
+        for (let i = 0; i < binaryStr.length; i++) {
+            bytes[i] = binaryStr.charCodeAt(i);
+        }
+        const view = new DataView(buffer);
+        const mask = view.getUint16(0);
+        const hasF64Mask = (mask & 0x8000) !== 0;
+        let f64Mask = 0;
+        let offset = 2;
+        let isLegacyF32 = false;
+        if (hasF64Mask) {
+            f64Mask = view.getUint16(offset);
+            offset += 2;
+        } else {
+            const expectedF64Length = SCHEMA.reduce((length, field, index) => (
+                length + ((mask & (1 << index))
+                    ? (field.type === 'float' ? 8 : field.type === 'dict' ? 1 : 2)
+                    : 0)
+            ), 2);
+            isLegacyF32 = buffer.byteLength !== expectedF64Length;
+        }
+
+        const output = {};
+        for (let i = 0; i < SCHEMA.length; i++) {
+            if ((mask & (1 << i)) === 0) continue;
+            const field = SCHEMA[i];
+            if (field.type === 'float') {
+                const isF64 = hasF64Mask ? ((f64Mask & (1 << i)) !== 0) : !isLegacyF32;
+                output[field.key] = isF64
+                    ? Number(view.getFloat64(offset).toPrecision(15)).toString()
+                    : Number(view.getFloat32(offset).toPrecision(7)).toString();
+                offset += isF64 ? 8 : 4;
+            } else if (field.type === 'u16') {
+                output[field.key] = view.getUint16(offset).toString();
+                offset += 2;
+            } else if (field.type === 'date') {
+                output[field.key] = daysToDate(view.getUint16(offset));
+                offset += 2;
+            } else if (field.type === 'dict') {
+                const value = view.getUint8(offset);
+                const reverseDictionary = Object.fromEntries(
+                    Object.entries(field.dict).map(([key, number]) => [number, key])
+                );
+                output[field.key] = reverseDictionary[value] || '';
+                offset += 1;
+            }
+        }
+        return output;
+    } catch (error) {
+        console.warn('无法解析分享参数', error);
+        return {};
+    }
+}
 function getUrlParamsObj() {
     const paramsObj = {};
     for (const key in els) {
@@ -162,10 +231,15 @@ function getUrlParamsObj() {
     }
     return paramsObj;
 }
-function getUrl() {
-    const paramsObj = getUrlParamsObj();
-    const b64 = generateBase64Url(paramsObj);
-    return `/svg${b64}`;
+function getShareUrl() {
+    const url = new URL(window.location.href);
+    url.search = '';
+    url.hash = '';
+    url.searchParams.set('v', generateBase64Url(getUrlParamsObj()));
+    return url.toString();
+}
+function buildSvg() {
+    return window.VrvSvg.generateSvg(getUrlParamsObj(), logoDataUri);
 }
 let debounceTimer = null;
 function update() {
@@ -177,13 +251,18 @@ function update() {
     syncTransactionFields();
     clearTimeout(debounceTimer);
     debounceTimer = setTimeout(() => {
-        const targetUrl = getUrl();
+        currentSvg = buildSvg();
+        const blob = new Blob([currentSvg], { type: 'image/svg+xml;charset=utf-8' });
+        const targetUrl = URL.createObjectURL(blob);
         const tempImg = new Image();
         tempImg.onload = () => {
+            if (previewObjectUrl) URL.revokeObjectURL(previewObjectUrl);
+            previewObjectUrl = targetUrl;
             img.src = targetUrl;
             statusMsg.style.display = 'none';
             img.style.display = 'block';
         };
+        tempImg.onerror = () => URL.revokeObjectURL(targetUrl);
         tempImg.src = targetUrl;
     }, 300);
 }
@@ -270,45 +349,45 @@ function fallbackCopyTextToClipboard(text) {
 }
 document.getElementById('copy-md-btn').addEventListener('click', (e) => {
     if (!els.ra.value || !els.pd.value || !els.ed.value) return;
-    const paramsObj = getUrlParamsObj();
-    const b64 = generateBase64Url(paramsObj);
-    const fullUrlShort = window.location.origin + `/svg${b64}`;
-    const shareUrlShort = window.location.origin + `/vrv${b64}`;
-    fallbackCopyTextToClipboard(`[![VPS Remaining Value](${fullUrlShort})](${shareUrlShort} "查看工具")`);
+    const shareUrl = getShareUrl();
+    fallbackCopyTextToClipboard(`[VPS Remaining Value](${shareUrl} "查看工具")`);
     tempText(e.target, '已复制 Markdown');
 });
 document.getElementById('copy-link-btn').addEventListener('click', (e) => {
     if (!els.ra.value || !els.pd.value || !els.ed.value) return;
-    const paramsObj = getUrlParamsObj();
-    const b64 = generateBase64Url(paramsObj);
-    const shareUrlShort = window.location.origin + `/vrv${b64}`;
-    fallbackCopyTextToClipboard(shareUrlShort);
+    fallbackCopyTextToClipboard(getShareUrl());
     tempText(e.target, '已复制分享链接');
 });
-document.getElementById('download-btn').addEventListener('click', async (e) => {
+document.getElementById('download-btn').addEventListener('click', (e) => {
     if (!els.ra.value || !els.pd.value || !els.ed.value) return;
-    const res = await fetch(getUrl());
-    const blob = await res.blob();
+    currentSvg = buildSvg();
+    const blob = new Blob([currentSvg], { type: 'image/svg+xml;charset=utf-8' });
     const a = document.createElement('a');
     a.href = URL.createObjectURL(blob);
     a.download = `vps-remaining-value-${els.td.value}.svg`;
+    document.body.appendChild(a);
     a.click();
-    URL.revokeObjectURL(a.href);
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 1000);
     tempText(e.target, '已下载 SVG');
 });
 const urlParams = new URLSearchParams(window.location.search);
+const sharedParams = urlParams.has('v')
+    ? decodeBase64Params(urlParams.get('v'))
+    : Object.fromEntries(urlParams.entries());
 let hasParams = false;
 Object.keys(els).forEach(key => {
-    if (urlParams.has(key)) {
-        els[key].value = urlParams.get(key);
+    if (sharedParams[key] !== undefined && sharedParams[key] !== '') {
+        els[key].value = sharedParams[key];
         hasParams = true;
     }
 });
-if (urlParams.has('er')) {
-    currentRate = parseFloat(urlParams.get('er')).toFixed(4);
+if (sharedParams.er) {
+    currentRate = parseFloat(sharedParams.er).toFixed(4);
     const from = els.rc.value || 'USD';
     const to = els.tc.value || 'CNY';
     rateDisplay.value = `1 ${from} = ${currentRate} ${to}`;
+    document.getElementById('rate-source').innerText = '数据来源: 分享链接内固定汇率';
     update();
 } else {
     fetchRates();
@@ -318,9 +397,8 @@ refreshIcon.addEventListener('click', async (e) => {
     refreshIcon.classList.add('spinning');
     await fetchRates();
     const url = new URL(window.location.href);
-    if (url.searchParams.has('er')) {
-        url.searchParams.delete('er');
-        window.history.replaceState({}, '', url.pathname + url.search);
+    if (url.searchParams.has('v') || url.searchParams.has('er')) {
+        window.history.replaceState({}, '', url.pathname);
     }
     setTimeout(() => refreshIcon.classList.remove('spinning'), 500);
 });
@@ -406,3 +484,21 @@ function checkEomVisibility() {
 els.ed.addEventListener('change', checkEomVisibility);
 checkEomVisibility();
 initEomCapsule();
+
+async function loadLogo() {
+    try {
+        const response = await fetch(new URL('./images/1.svg', window.location.href));
+        if (!response.ok) throw new Error('Logo request failed');
+        const svg = (await response.text()).replace(/#000000|#000\b|black/gi, '#D4AF37');
+        const bytes = new TextEncoder().encode(svg);
+        let binary = '';
+        bytes.forEach(byte => {
+            binary += String.fromCharCode(byte);
+        });
+        logoDataUri = `data:image/svg+xml;base64,${btoa(binary)}`;
+        update();
+    } catch (error) {
+        console.warn('Logo 加载失败，继续生成无 Logo 的 SVG', error);
+    }
+}
+loadLogo();
