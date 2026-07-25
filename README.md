@@ -2,7 +2,7 @@
 
 用于计算 VPS 与各类订阅服务剩余价值的浏览器工具，支持汇率转换、分享链接以及 SVG 预览和下载。
 
-在线使用：<https://ghunlil.github.io/vps-remaining-value/>
+在线使用：<https://dev.unlil.com/vps-remaining-value/>
 
 ![主界面](./resource/3.png)
 
